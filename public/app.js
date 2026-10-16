@@ -90,6 +90,10 @@ const state = {
   diurnalAlign: "lst", // 'lst' | 'utc'
   scrubIdx: 0, // Currently scrubbed point index on chart
   lockedDayIdx: null, // null = LIVE NOW, number = Day index 0..13 for telemetry inspector
+  mapView: "global", // 'global' | 'focus'
+  solarOffsetMin: 0, // minutes offset from real-time UTC (-720..+720)
+  worldData: null, // { land: [...], borders: [...] }
+  mapHitTargets: [], // Interactive station click targets on map canvas
   curatedCities: [],
   presets: [],
   selectedLocations: [], // Max 3 CityLocation objects
@@ -167,6 +171,16 @@ const els = {
   btnThemeToggle: document.getElementById("btn-theme-toggle"),
   iconSun: document.getElementById("icon-sun"),
   iconMoon: document.getElementById("icon-moon"),
+  // Map elements
+  mapTimeBadge: document.getElementById("map-time-badge"),
+  mapEphemerisStrip: document.getElementById("map-ephemeris-strip"),
+  mapViewSegmented: document.getElementById("map-view-segmented"),
+  btnMapLive: document.getElementById("btn-map-live"),
+  mapCanvasStage: document.getElementById("map-canvas-stage"),
+  mapCanvas: document.getElementById("wx-map-canvas"),
+  solarTimeSlider: document.getElementById("solar-time-slider"),
+  mapStationSolarRow: document.getElementById("map-station-solar-row"),
+  // Chart elements
   chartModeSegmented: document.getElementById("chart-mode-segmented"),
   horizonSegmented: document.getElementById("horizon-segmented"),
   diurnalAlignSegmented: document.getElementById("diurnal-align-segmented"),
@@ -202,6 +216,7 @@ function applyTheme(theme) {
   if (metaTheme) metaTheme.setAttribute("content", theme === "dark" ? "#000000" : "#f2f2f7");
   els.iconSun.style.display = theme === "dark" ? "block" : "none";
   els.iconMoon.style.display = theme === "dark" ? "none" : "block";
+  renderSynopticMap();
   renderChart();
 }
 
@@ -213,24 +228,37 @@ function updateUtcClock() {
   els.utcClock.textContent = `${hh}:${mm}:${ss}Z`;
 }
 
-// Fetch Presets and Initial Weather Data
+// Fetch Presets, Vector World Map, and Initial Weather Data
 async function initApp() {
   applyTheme(state.theme);
   updateUtcClock();
   setInterval(updateUtcClock, 1000);
+  // Real-time solar terminator refresh every 30s when in LIVE mode
+  setInterval(() => {
+    if (state.solarOffsetMin === 0) {
+      renderSynopticMap();
+    }
+  }, 30000);
 
   // Sync unit toggle UI
   els.unitSegmented.querySelectorAll(".seg-btn").forEach((b) => {
     b.classList.toggle("active", b.dataset.unit === state.units);
   });
 
+  // Load vector world coastlines & presets in parallel
   try {
-    const res = await fetch("/api/presets");
-    const data = await res.json();
+    const [presetRes, worldRes] = await Promise.all([
+      fetch("/api/presets"),
+      fetch("/world.json").catch(() => null),
+    ]);
+    const data = await presetRes.json();
     state.curatedCities = data.curated || [];
     state.presets = data.presets || [];
+    if (worldRes && worldRes.ok) {
+      state.worldData = await worldRes.json();
+    }
   } catch (e) {
-    console.error("Failed loading presets", e);
+    console.error("Failed loading presets or world vectors", e);
   }
 
   // Restore saved cities or use default triad (Tokyo, San Francisco, Zurich)
@@ -247,6 +275,7 @@ async function initApp() {
   }
 
   bindEvents();
+  renderSynopticMap();
   await refreshWeatherData();
 }
 
@@ -293,6 +322,7 @@ async function refreshWeatherData() {
 
 function renderAll() {
   renderStationCards();
+  renderSynopticMap();
   renderLegendBar();
   renderScrubberReadout();
   renderChart();
@@ -1889,8 +1919,84 @@ function bindEvents() {
 
   // Window resize
   window.addEventListener("resize", () => {
+    renderSynopticMap();
     renderChart();
   });
+
+  // Map View Mode Segmented Control (Global vs Focus Triad)
+  if (els.mapViewSegmented) {
+    els.mapViewSegmented.querySelectorAll(".seg-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        state.mapView = btn.dataset.view;
+        els.mapViewSegmented.querySelectorAll(".seg-btn").forEach((b) => {
+          b.classList.toggle("active", b === btn);
+        });
+        renderSynopticMap();
+      });
+    });
+  }
+
+  // Map LIVE reset button
+  if (els.btnMapLive) {
+    els.btnMapLive.addEventListener("click", () => {
+      state.solarOffsetMin = 0;
+      if (els.solarTimeSlider) els.solarTimeSlider.value = "0";
+      els.btnMapLive.classList.add("active");
+      renderSynopticMap();
+    });
+  }
+
+  // Solar Time Offset Slider (-12h .. +12h)
+  if (els.solarTimeSlider) {
+    els.solarTimeSlider.addEventListener("input", () => {
+      state.solarOffsetMin = Number(els.solarTimeSlider.value);
+      if (els.btnMapLive) {
+        els.btnMapLive.classList.toggle("active", state.solarOffsetMin === 0);
+      }
+      renderSynopticMap();
+    });
+  }
+
+  // Map Canvas Click / Tap to select REF station or add background station
+  if (els.mapCanvas) {
+    els.mapCanvas.addEventListener("click", async (e) => {
+      const rect = els.mapCanvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+
+      // Find closest hit target within radius
+      let best = null;
+      let bestDist = Infinity;
+      for (const t of state.mapHitTargets) {
+        const d = Math.hypot(mx - t.x, my - t.y);
+        if (d <= t.r && d < bestDist) {
+          best = t;
+          bestDist = d;
+        }
+      }
+
+      if (!best) return;
+
+      if (best.type === "selected") {
+        // Set as REF station (or toggle solo if already REF)
+        if (state.refIdx === best.idx) {
+          state.soloIdx = state.soloIdx === best.idx ? null : best.idx;
+        } else {
+          state.refIdx = best.idx;
+        }
+        renderAll();
+      } else if (best.type === "curated" && best.loc) {
+        // Add or swap into slot #3
+        if (state.selectedLocations.length < 3) {
+          state.selectedLocations.push(best.loc);
+        } else {
+          state.selectedLocations[2] = best.loc;
+        }
+        saveSelectedLocations();
+        await refreshWeatherData();
+      }
+    });
+  }
 
   // Open/Close Modal
   els.btnAddStation.addEventListener("click", () => openStationModal(null));
@@ -1965,6 +2071,658 @@ function bindEvents() {
       { timeout: 6000 }
     );
   });
+}
+
+// ============================================================================
+// 9. Astronomical Solar Ephemeris & Real-Time Solar Terminator Map Engine
+// ============================================================================
+const DEG2RAD = Math.PI / 180;
+const RAD2DEG = 180 / Math.PI;
+
+// Offscreen 360x180 shader buffer for smooth atmospheric twilight & night shadows
+const solarShaderCanvas = document.createElement("canvas");
+solarShaderCanvas.width = 360;
+solarShaderCanvas.height = 180;
+const solarShaderCtx = solarShaderCanvas.getContext("2d");
+
+function computeSolarEphemeris(timestampMs) {
+  // Days since J2000.0 epoch (2000-01-01T12:00:00Z = JD 2451545.0)
+  const d = timestampMs / 86400000 - 10957.5;
+
+  // Mean longitude & mean anomaly of the Sun (degrees)
+  const L = ((280.460 + 0.9856474 * d) % 360 + 360) % 360;
+  const g = ((357.528 + 0.9856003 * d) % 360 + 360) % 360;
+  const gRad = g * DEG2RAD;
+
+  // Ecliptic longitude (degrees) & Obliquity of ecliptic
+  const lambda = L + 1.915 * Math.sin(gRad) + 0.020 * Math.sin(2 * gRad);
+  const lambdaRad = lambda * DEG2RAD;
+  const epsilon = 23.439 - 0.0000004 * d;
+  const epsRad = epsilon * DEG2RAD;
+
+  // Solar Declination δ
+  const sinDec = Math.sin(epsRad) * Math.sin(lambdaRad);
+  const cosDec = Math.sqrt(Math.max(1e-8, 1 - sinDec * sinDec));
+  const decDeg = Math.asin(sinDec) * RAD2DEG;
+
+  // Right Ascension α_RA & Equation of Time (minutes)
+  const raDeg = ((Math.atan2(Math.cos(epsRad) * Math.sin(lambdaRad), Math.cos(lambdaRad)) * RAD2DEG) % 360 + 360) % 360;
+  let dRa = L - raDeg;
+  if (dRa > 180) dRa -= 360;
+  if (dRa < -180) dRa += 360;
+  const eotMinutes = dRa * 4;
+
+  // Subsolar Longitude λ_s from fractional UTC hour + Equation of Time
+  const dt = new Date(timestampMs);
+  const utcHours = dt.getUTCHours() + dt.getUTCMinutes() / 60 + dt.getUTCSeconds() / 3600;
+  let subsolarLon = -15 * (utcHours - 12 + eotMinutes / 60);
+  subsolarLon = ((((subsolarLon + 180) % 360) + 360) % 360) - 180;
+  const subsolarLat = decDeg;
+
+  let antisolarLon = subsolarLon + 180;
+  if (antisolarLon > 180) antisolarLon -= 360;
+  const antisolarLat = -subsolarLat;
+
+  return {
+    timestampMs,
+    decDeg,
+    sinDec,
+    cosDec,
+    eotMinutes,
+    subsolarLat,
+    subsolarLon,
+    antisolarLat,
+    antisolarLon,
+  };
+}
+
+function computeSolarAtCoord(latDeg, lonDeg, ephem) {
+  const latRad = latDeg * DEG2RAD;
+  const sinLat = Math.sin(latRad);
+  const cosLat = Math.cos(latRad);
+  const hRad = (lonDeg - ephem.subsolarLon) * DEG2RAD;
+  const cosH = Math.cos(hRad);
+  const sinH = Math.sin(hRad);
+
+  const sinAlt = Math.max(-1, Math.min(1, sinLat * ephem.sinDec + cosLat * ephem.cosDec * cosH));
+  const altDeg = Math.asin(sinAlt) * RAD2DEG;
+
+  const y = -sinH * ephem.cosDec;
+  const x = cosLat * ephem.sinDec - sinLat * ephem.cosDec * cosH;
+  const azDeg = ((Math.atan2(y, x) * RAD2DEG) % 360 + 360) % 360;
+
+  let phase = "NIGHT";
+  let phaseClass = "night";
+  if (altDeg >= -0.833) {
+    phase = "DAY";
+    phaseClass = "day";
+  } else if (altDeg >= -6) {
+    phase = "CIV TWIL";
+    phaseClass = "twil";
+  } else if (altDeg >= -12) {
+    phase = "NAUT TWIL";
+    phaseClass = "twil";
+  } else if (altDeg >= -18) {
+    phase = "ASTR TWIL";
+    phaseClass = "twil";
+  }
+
+  return { altDeg, azDeg, phase, phaseClass };
+}
+
+function greatCircleDistanceKm(lat1, lon1, lat2, lon2) {
+  const r = 6371;
+  const dLat = (lat2 - lat1) * DEG2RAD;
+  const dLon = (lon2 - lon1) * DEG2RAD;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * DEG2RAD) * Math.cos(lat2 * DEG2RAD) * Math.sin(dLon / 2) ** 2;
+  return 2 * r * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+function greatCirclePoints(lat1, lon1, lat2, lon2, segments = 48) {
+  const phi1 = lat1 * DEG2RAD;
+  const lam1 = lon1 * DEG2RAD;
+  const phi2 = lat2 * DEG2RAD;
+  const lam2 = lon2 * DEG2RAD;
+
+  const v1 = [Math.cos(phi1) * Math.cos(lam1), Math.cos(phi1) * Math.sin(lam1), Math.sin(phi1)];
+  const v2 = [Math.cos(phi2) * Math.cos(lam2), Math.cos(phi2) * Math.sin(lam2), Math.sin(phi2)];
+  const dot = Math.max(-1, Math.min(1, v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2]));
+  const omega = Math.acos(dot);
+  const sinOmega = Math.sin(omega);
+
+  const pts = [];
+  for (let i = 0; i <= segments; i++) {
+    const t = i / segments;
+    let x, y, z;
+    if (sinOmega < 1e-5) {
+      x = v1[0] + t * (v2[0] - v1[0]);
+      y = v1[1] + t * (v2[1] - v1[1]);
+      z = v1[2] + t * (v2[2] - v1[2]);
+    } else {
+      const a = Math.sin((1 - t) * omega) / sinOmega;
+      const b = Math.sin(t * omega) / sinOmega;
+      x = a * v1[0] + b * v2[0];
+      y = a * v1[1] + b * v2[1];
+      z = a * v1[2] + b * v2[2];
+    }
+    const lat = Math.atan2(z, Math.hypot(x, y)) * RAD2DEG;
+    const lon = Math.atan2(y, x) * RAD2DEG;
+    pts.push([lon, lat]);
+  }
+  return pts;
+}
+
+function renderSynopticMap() {
+  const canvas = els.mapCanvas;
+  if (!canvas || !els.mapCanvasStage) return;
+
+  const rect = els.mapCanvasStage.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const W = Math.max(280, Math.floor(rect.width));
+  const H = Math.max(175, Math.floor(rect.height));
+
+  if (canvas.width !== W * dpr || canvas.height !== H * dpr) {
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+  }
+
+  const targetMs = Date.now() + state.solarOffsetMin * 60000;
+  const ephem = computeSolarEphemeris(targetMs);
+  const isDark = state.theme === "dark";
+
+  // Update Top Time Badge & Ephemeris Strip
+  const dt = new Date(targetMs);
+  const utcStr = `${dt.toISOString().slice(5, 10)} ${dt.toISOString().slice(11, 16)}Z`;
+  if (els.mapTimeBadge) {
+    if (state.solarOffsetMin === 0) {
+      els.mapTimeBadge.textContent = `LIVE · ${utcStr}`;
+    } else {
+      const offHr = (state.solarOffsetMin / 60).toFixed(1);
+      els.mapTimeBadge.textContent = `OFFSET ${state.solarOffsetMin > 0 ? "+" : ""}${offHr}H · ${utcStr}`;
+    }
+  }
+
+  if (els.mapEphemerisStrip) {
+    const eotSign = ephem.eotMinutes >= 0 ? "+" : "-";
+    const eotAbs = Math.abs(ephem.eotMinutes);
+    const eotM = Math.floor(eotAbs);
+    const eotS = Math.round((eotAbs - eotM) * 60);
+    els.mapEphemerisStrip.innerHTML = `
+      <span class="ephem-item"><span class="ephem-key">☉ ZENITH</span><span class="ephem-val">${formatCoord(ephem.subsolarLat, ephem.subsolarLon)}</span></span>
+      <span class="ephem-item"><span class="ephem-key">δ</span><span class="ephem-val">${fmtSigned(ephem.decDeg, 2, "°")}</span></span>
+      <span class="ephem-item"><span class="ephem-key">EoT</span><span class="ephem-val">${eotSign}${eotM}m${String(eotS).padStart(2, "0")}s</span></span>
+    `;
+  }
+
+  // Determine Map Viewport Domain (Global vs Focus Triad)
+  let lonMin = -180;
+  let lonMax = 180;
+  let latMin = -72;
+  let latMax = 80;
+
+  const activeLocs = state.weatherData.length
+    ? state.weatherData.map((w) => w.location)
+    : state.selectedLocations;
+
+  if (state.mapView === "focus" && activeLocs.length > 0) {
+    let minLa = Infinity, maxLa = -Infinity, minLo = Infinity, maxLo = -Infinity;
+    activeLocs.forEach((l) => {
+      if (l.latitude < minLa) minLa = l.latitude;
+      if (l.latitude > maxLa) maxLa = l.latitude;
+      if (l.longitude < minLo) minLo = l.longitude;
+      if (l.longitude > maxLo) maxLo = l.longitude;
+    });
+    const latSpan = Math.max(28, (maxLa - minLa) * 1.65);
+    const lonSpan = Math.max(55, (maxLo - minLo) * 1.55);
+    const cLat = (minLa + maxLa) / 2;
+    const cLon = (minLo + maxLo) / 2;
+    const aspect = W / H;
+    let finalLonSpan = Math.max(lonSpan, latSpan * aspect);
+    let finalLatSpan = finalLonSpan / aspect;
+    if (finalLonSpan > 340) {
+      lonMin = -180;
+      lonMax = 180;
+      latMin = -72;
+      latMax = 80;
+    } else {
+      lonMin = Math.max(-180, cLon - finalLonSpan / 2);
+      lonMax = Math.min(180, lonMin + finalLonSpan);
+      lonMin = Math.max(-180, lonMax - finalLonSpan);
+      latMin = Math.max(-75, cLat - finalLatSpan / 2);
+      latMax = Math.min(82, latMin + finalLatSpan);
+      latMin = Math.max(-75, latMax - finalLatSpan);
+    }
+  }
+
+  const projX = (lon) => ((lon - lonMin) / (lonMax - lonMin)) * W;
+  const projY = (lat) => ((latMax - lat) / (latMax - latMin)) * H;
+
+  const ctx = canvas.getContext("2d");
+  ctx.save();
+  ctx.scale(dpr, dpr);
+
+  // 1. Ocean Base Fill
+  ctx.fillStyle = isDark ? "#07101e" : "#cadff0";
+  ctx.fillRect(0, 0, W, H);
+
+  // 2. Vector Continents & Country Borders (Natural Earth 110m)
+  if (state.worldData) {
+    ctx.save();
+    ctx.fillStyle = isDark ? "#182538" : "#eef2f6";
+    ctx.strokeStyle = isDark ? "rgba(120, 165, 220, 0.25)" : "rgba(60, 85, 115, 0.35)";
+    ctx.lineWidth = 0.7;
+
+    for (const poly of state.worldData.land) {
+      for (const ring of poly) {
+        if (!ring.length) continue;
+        ctx.beginPath();
+        for (let i = 0; i < ring.length; i++) {
+          const x = projX(ring[i][0]);
+          const y = projY(ring[i][1]);
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      }
+    }
+
+    // Subtle geopolitical borders
+    if (state.worldData.borders) {
+      ctx.strokeStyle = isDark ? "rgba(255, 255, 255, 0.08)" : "rgba(60, 80, 100, 0.16)";
+      ctx.lineWidth = 0.5;
+      for (const line of state.worldData.borders) {
+        if (!line.length) continue;
+        ctx.beginPath();
+        for (let i = 0; i < line.length; i++) {
+          const x = projX(line[i][0]);
+          const y = projY(line[i][1]);
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  // 3. Real-Time Multi-Band Solar Elevation & Twilight Shadow Shader
+  const sw = 360;
+  const sh = 180;
+  const imgData = solarShaderCtx.createImageData(sw, sh);
+  const buf = imgData.data;
+
+  // Precompute sin/cos latitude rows
+  const sinLats = new Float32Array(sh);
+  const cosLats = new Float32Array(sh);
+  for (let py = 0; py < sh; py++) {
+    const lat = latMax - ((py + 0.5) / sh) * (latMax - latMin);
+    const r = lat * DEG2RAD;
+    sinLats[py] = Math.sin(r);
+    cosLats[py] = Math.cos(r);
+  }
+
+  // Precompute cos hour-angle columns
+  const cosHs = new Float32Array(sw);
+  for (let px = 0; px < sw; px++) {
+    const lon = lonMin + ((px + 0.5) / sw) * (lonMax - lonMin);
+    cosHs[px] = Math.cos((lon - ephem.subsolarLon) * DEG2RAD);
+  }
+
+  let ptr = 0;
+  for (let py = 0; py < sh; py++) {
+    const sLat = sinLats[py];
+    const cLat = cosLats[py];
+    for (let px = 0; px < sw; px++) {
+      const sinAlt = sLat * ephem.sinDec + cLat * ephem.cosDec * cosHs[px];
+      const altDeg = Math.asin(Math.max(-1, Math.min(1, sinAlt))) * RAD2DEG;
+
+      if (altDeg >= 0) {
+        // Daylit hemisphere: subtle solar zenith warmth when altitude > 55°
+        if (altDeg > 55) {
+          const intensity = (altDeg - 55) / 35;
+          buf[ptr] = 255;
+          buf[ptr + 1] = 200;
+          buf[ptr + 2] = 90;
+          buf[ptr + 3] = Math.round(intensity * (isDark ? 34 : 28));
+        } else {
+          buf[ptr + 3] = 0;
+        }
+      } else {
+        // Twilight & Umbral Night multi-stage shadow
+        // Smooth transition from 0° -> -6° (Civil) -> -12° (Nautical) -> -18° (Astronomical) -> Umbral
+        let alpha = 0;
+        if (altDeg >= -6) {
+          alpha = ((0 - altDeg) / 6) * 0.28;
+        } else if (altDeg >= -12) {
+          alpha = 0.28 + ((-6 - altDeg) / 6) * 0.22;
+        } else if (altDeg >= -18) {
+          alpha = 0.5 + ((-12 - altDeg) / 6) * 0.16;
+        } else {
+          alpha = 0.66;
+        }
+        buf[ptr] = isDark ? 1 : 8;
+        buf[ptr + 1] = isDark ? 3 : 14;
+        buf[ptr + 2] = isDark ? 10 : 32;
+        buf[ptr + 3] = Math.round(alpha * (isDark ? 235 : 175));
+      }
+      ptr += 4;
+    }
+  }
+  solarShaderCtx.putImageData(imgData, 0, 0);
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(solarShaderCanvas, 0, 0, W, H);
+  ctx.restore();
+
+  // 4. Graticule & Astronomical Parallels (Equator, Tropics, Polar Circles)
+  ctx.save();
+  ctx.lineWidth = 0.5;
+  ctx.strokeStyle = isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.07)";
+  for (let lon = -150; lon <= 150; lon += 30) {
+    if (lon < lonMin || lon > lonMax) continue;
+    const x = projX(lon);
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, H);
+    ctx.stroke();
+  }
+  for (let lat = -60; lat <= 60; lat += 30) {
+    if (lat < latMin || lat > latMax) continue;
+    const y = projY(lat);
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(W, y);
+    ctx.stroke();
+  }
+
+  // Equator & Tropics
+  const parallels = [
+    { lat: 0, dash: [], color: isDark ? "rgba(255,255,255,0.14)" : "rgba(0,0,0,0.16)" },
+    { lat: 23.439, dash: [3, 4], color: isDark ? "rgba(255,159,10,0.18)" : "rgba(234,128,0,0.22)" },
+    { lat: -23.439, dash: [3, 4], color: isDark ? "rgba(255,159,10,0.18)" : "rgba(234,128,0,0.22)" },
+    { lat: 66.56, dash: [2, 4], color: isDark ? "rgba(100,210,255,0.18)" : "rgba(0,122,255,0.2)" },
+  ];
+  parallels.forEach((p) => {
+    if (p.lat < latMin || p.lat > latMax) return;
+    const y = projY(p.lat);
+    ctx.strokeStyle = p.color;
+    ctx.setLineDash(p.dash);
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(W, y);
+    ctx.stroke();
+  });
+  ctx.restore();
+
+  // 5. Analytical Solar Terminator Curve (0° Horizon) & Civil Twilight (-6°) Contour
+  const tanDec = Math.abs(ephem.sinDec / ephem.cosDec) < 1e-4 ? 1e-4 : ephem.sinDec / ephem.cosDec;
+  ctx.save();
+  ctx.strokeStyle = isDark ? "rgba(255, 179, 64, 0.72)" : "rgba(234, 128, 0, 0.75)";
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  for (let px = 0; px <= W; px += 2) {
+    const lon = lonMin + (px / W) * (lonMax - lonMin);
+    const hRad = (lon - ephem.subsolarLon) * DEG2RAD;
+    const termLat = Math.atan(-Math.cos(hRad) / tanDec) * RAD2DEG;
+    const py = projY(termLat);
+    if (px === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.stroke();
+  ctx.restore();
+
+  // 6. Subsolar Zenith Point (☉) & Antisolar Midnight Point (☾)
+  if (
+    ephem.subsolarLon >= lonMin &&
+    ephem.subsolarLon <= lonMax &&
+    ephem.subsolarLat >= latMin &&
+    ephem.subsolarLat <= latMax
+  ) {
+    const sx = projX(ephem.subsolarLon);
+    const sy = projY(ephem.subsolarLat);
+    ctx.save();
+    ctx.strokeStyle = "rgba(255, 196, 60, 0.45)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(sx, sy, 11, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.fillStyle = "#ffcc00";
+    ctx.beginPath();
+    ctx.arc(sx, sy, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#000000";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  state.mapHitTargets = [];
+
+  // 7. Background Curated Synoptic Station Dots (Tap to add/swap)
+  ctx.save();
+  state.curatedCities.forEach((loc) => {
+    if (loc.longitude < lonMin || loc.longitude > lonMax || loc.latitude < latMin || loc.latitude > latMax) return;
+    const isSel = activeLocs.some(
+      (a) => Math.abs(a.latitude - loc.latitude) < 0.15 && Math.abs(a.longitude - loc.longitude) < 0.15
+    );
+    if (isSel) return;
+
+    const x = projX(loc.longitude);
+    const y = projY(loc.latitude);
+    ctx.fillStyle = isDark ? "rgba(235, 235, 245, 0.28)" : "rgba(60, 60, 67, 0.35)";
+    ctx.beginPath();
+    ctx.arc(x, y, 2.3, 0, Math.PI * 2);
+    ctx.fill();
+
+    state.mapHitTargets.push({ x, y, r: 10, type: "curated", loc });
+  });
+  ctx.restore();
+
+  // 8. Great-Circle Geodesic Arcs Connecting Reference Station (REF) to Selected Stations
+  const refLoc = activeLocs[state.refIdx] || activeLocs[0];
+  if (refLoc && activeLocs.length > 1) {
+    activeLocs.forEach((loc, idx) => {
+      if (idx === state.refIdx) return;
+      const arcPts = greatCirclePoints(refLoc.latitude, refLoc.longitude, loc.latitude, loc.longitude, 56);
+      const color = isDark ? SLOT_COLORS[idx].hex : SLOT_COLORS[idx].lightHex;
+      const rgb = SLOT_COLORS[idx].rgb;
+
+      ctx.save();
+      ctx.strokeStyle = `rgba(${rgb}, 0.55)`;
+      ctx.lineWidth = 1.3;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      for (let i = 0; i < arcPts.length; i++) {
+        const [lon, lat] = arcPts[i];
+        const x = projX(lon);
+        const y = projY(lat);
+        if (i === 0) {
+          ctx.moveTo(x, y);
+        } else {
+          // Avoid drawing horizontal line across entire map on antimeridian wrap
+          const prevLon = arcPts[i - 1][0];
+          if (Math.abs(lon - prevLon) > 160) {
+            ctx.moveTo(x, y);
+          } else {
+            ctx.lineTo(x, y);
+          }
+        }
+      }
+      ctx.stroke();
+      ctx.restore();
+    });
+  }
+
+  // 9. Selected Station Indicators & Floating HUD Callouts
+  const labelBoxes = [];
+  const stationSolarCellsHtml = [];
+
+  activeLocs.forEach((loc, idx) => {
+    const wx = state.weatherData[idx];
+    const color = isDark ? SLOT_COLORS[idx].hex : SLOT_COLORS[idx].lightHex;
+    const rgb = SLOT_COLORS[idx].rgb;
+    const isRef = idx === state.refIdx;
+    const code = shortCode(loc);
+    const solar = computeSolarAtCoord(loc.latitude, loc.longitude, ephem);
+
+    const x = projX(loc.longitude);
+    const y = projY(loc.latitude);
+
+    // Hit target for clicking station on map
+    state.mapHitTargets.push({ x, y, r: 18, type: "selected", idx, loc });
+
+    // Draw Wind Direction Vector Barb if weather loaded
+    if (wx && wx.current) {
+      const windRad = ((wx.current.wind_dir + 180) - 90) * DEG2RAD;
+      const barbLen = 15;
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + Math.cos(windRad) * barbLen, y + Math.sin(windRad) * barbLen);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Outer Radar Reticle Ring
+    ctx.save();
+    ctx.fillStyle = `rgba(${rgb}, 0.22)`;
+    ctx.beginPath();
+    ctx.arc(x, y, isRef ? 11 : 8.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.strokeStyle = color;
+    ctx.lineWidth = isRef ? 1.6 : 1.1;
+    ctx.beginPath();
+    ctx.arc(x, y, isRef ? 11 : 8.5, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // REF station crosshair ticks
+    if (isRef) {
+      ctx.beginPath();
+      ctx.moveTo(x - 14, y);
+      ctx.lineTo(x - 9, y);
+      ctx.moveTo(x + 9, y);
+      ctx.lineTo(x + 14, y);
+      ctx.moveTo(x, y - 14);
+      ctx.lineTo(x, y - 9);
+      ctx.moveTo(x, y + 9);
+      ctx.lineTo(x, y + 14);
+      ctx.stroke();
+    }
+
+    // Solid Core Station Node
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(x, y, 4.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = isDark ? "#000000" : "#ffffff";
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+    ctx.restore();
+
+    // Prepare HUD Callout Tag for this station
+    const tempStr = wx ? `${conv.temp(wx.current.temp).toFixed(1)}°` : "";
+    const sunIcon = solar.altDeg >= -0.833 ? "☉" : "☾";
+    const hudText = `${code} ${tempStr} ${sunIcon}${fmtSigned(solar.altDeg, 0, "°")}`;
+
+    labelBoxes.push({
+      idx,
+      ax: x,
+      ay: y,
+      lx: x,
+      ly: y - 18,
+      text: hudText,
+      color,
+      rgb,
+      isRef,
+    });
+
+    // Bottom bar solar & geodesic summary cell
+    const gcDistKm =
+      refLoc && !isRef
+        ? Math.round(greatCircleDistanceKm(refLoc.latitude, refLoc.longitude, loc.latitude, loc.longitude))
+        : 0;
+    const distStr = isRef
+      ? "REF ORIGIN"
+      : state.units === "imperial"
+      ? `${Math.round(gcDistKm * 0.539957)} NM`
+      : `${gcDistKm} km`;
+
+    stationSolarCellsHtml.push(`
+      <div class="map-solar-cell" style="--slot-color: var(--city-${idx})">
+        <div class="map-solar-head">
+          <span>${escapeHtml(loc.name)} (${code})</span>
+          <span class="solar-phase-pill ${solar.phaseClass}">${solar.phase}</span>
+        </div>
+        <div class="map-solar-sub">
+          α ${fmtSigned(solar.altDeg, 1, "°")} · Az ${Math.round(solar.azDeg)}° · ${distStr}
+        </div>
+      </div>
+    `);
+  });
+
+  // Collision-resolved HUD callout pills on canvas
+  ctx.save();
+  ctx.font = '700 10px "SF Mono", ui-monospace, Menlo, monospace';
+  labelBoxes.forEach((b) => {
+    const tw = ctx.measureText(b.text).width;
+    b.w = tw + 10;
+    b.h = 16;
+    b.lx = Math.max(b.w / 2 + 4, Math.min(W - b.w / 2 - 4, b.ax));
+    b.ly = b.ay < 32 ? b.ay + 19 : b.ay - 19;
+  });
+
+  // Simple pairwise vertical separation if boxes overlap
+  for (let i = 0; i < labelBoxes.length; i++) {
+    for (let j = i + 1; j < labelBoxes.length; j++) {
+      const a = labelBoxes[i];
+      const b = labelBoxes[j];
+      if (Math.abs(a.lx - b.lx) < (a.w + b.w) / 2 + 4 && Math.abs(a.ly - b.ly) < 17) {
+        b.ly = a.ly + (b.ay >= a.ay ? 18 : -18);
+      }
+    }
+  }
+
+  labelBoxes.forEach((b) => {
+    const rx = b.lx - b.w / 2;
+    const ry = b.ly - b.h / 2;
+
+    // Leader line from station node to pill
+    ctx.strokeStyle = `rgba(${b.rgb}, 0.65)`;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(b.ax, b.ay);
+    ctx.lineTo(b.lx, b.ly);
+    ctx.stroke();
+
+    ctx.fillStyle = isDark ? "rgba(18, 20, 26, 0.88)" : "rgba(255, 255, 255, 0.92)";
+    ctx.beginPath();
+    ctx.roundRect(rx, ry, b.w, b.h, 4.5);
+    ctx.fill();
+
+    ctx.strokeStyle = b.color;
+    ctx.lineWidth = b.isRef ? 1.3 : 0.85;
+    ctx.stroke();
+
+    ctx.fillStyle = isDark ? "#f5f5f7" : "#1c1c1e";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(b.text, b.lx, b.ly + 0.5);
+  });
+  ctx.restore();
+
+  if (els.mapStationSolarRow) {
+    els.mapStationSolarRow.innerHTML = stationSolarCellsHtml.join("");
+  }
+
+  ctx.restore();
 }
 
 function escapeHtml(str) {

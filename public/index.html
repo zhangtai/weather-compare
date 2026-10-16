@@ -65,6 +65,52 @@
         </div>
       </section>
 
+      <!-- Global Synoptic Map & Real-Time Solar Terminator -->
+      <section class="section-block" aria-label="Synoptic Map and Real-Time Solar Terminator">
+        <div class="section-header-bar">
+          <div class="section-label">
+            <span>SOLAR TERMINATOR &amp; SYNOPTIC MAP</span>
+            <span class="inspector-badge" id="map-time-badge">REALTIME UTC</span>
+          </div>
+          <div class="section-sub-actions">
+            <span class="hint-label">Tap station node to set REF or add · Drag slider to scrub solar shadow</span>
+          </div>
+        </div>
+
+        <div class="ios-card map-card">
+          <div class="map-top-bar">
+            <div class="map-ephemeris-strip" id="map-ephemeris-strip">
+              <!-- Subsolar point, Declination δ, EoT -->
+            </div>
+
+            <div class="map-controls-group">
+              <div class="ios-segmented ios-segmented-sm" id="map-view-segmented">
+                <button type="button" class="seg-btn active" data-view="global">Global</button>
+                <button type="button" class="seg-btn" data-view="focus">Focus Triad</button>
+              </div>
+              <button type="button" class="ios-pill-btn active" id="btn-map-live" title="Reset solar shadow to real-time UTC">LIVE</button>
+            </div>
+          </div>
+
+          <!-- High-DPI Map Canvas Stage -->
+          <div class="map-canvas-stage" id="map-canvas-stage">
+            <canvas id="wx-map-canvas"></canvas>
+          </div>
+
+          <!-- Solar Time Scrubber & Station Solar Elevation Readout -->
+          <div class="map-bottom-bar">
+            <div class="solar-scrubber-row">
+              <span class="solar-scrub-label mono">-12h</span>
+              <input type="range" id="solar-time-slider" class="ios-range-slider" min="-720" max="720" step="10" value="0" aria-label="Solar shadow time offset in minutes" />
+              <span class="solar-scrub-label mono">+12h</span>
+            </div>
+            <div class="map-station-solar-row" id="map-station-solar-row">
+              <!-- Per-station solar elevation α, azimuth, twilight state, great-circle distance -->
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- Hero Range Area Chart Card -->
       <section class="section-block" aria-label="Forecast Range Comparison Chart">
         <div class="ios-card chart-card">
