@@ -1,0 +1,13 @@
+{
+  "name": "wx-compare",
+  "version": "1.0.0",
+  "description": "Lightweight iOS-native style multi-city meteorological telemetry & range-area forecast comparison app on Bun",
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/server.ts",
+    "dev": "bun --watch run src/server.ts"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  }
+}

@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#000000" id="meta-theme-color" />
+  <title>WX · COMPARE — Multi-Station Telemetry</title>
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="ios-shell">
+    <!-- Sticky iOS Translucent Navigation Bar -->
+    <header class="ios-navbar">
+      <div class="ios-navbar-inner">
+        <div class="brand-cluster">
+          <div class="brand-title">
+            <span class="status-dot" id="live-status-dot" title="Open-Meteo Telemetry Feed"></span>
+            <span>WX</span><span class="brand-sep">·</span><span>COMPARE</span>
+          </div>
+          <span class="utc-clock" id="utc-clock">--:-- UTC</span>
+        </div>
+
+        <div class="nav-controls">
+          <!-- Preset quick selector -->
+          <button class="ios-pill-btn" id="btn-open-presets" type="button" title="Station Presets & Search">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+            <span>Presets</span>
+          </button>
+
+          <!-- Delta Reference Mode Toggle -->
+          <button class="ios-pill-btn active" id="btn-delta-toggle" type="button" title="Toggle Cross-City Delta (Δ) vs Reference Station">
+            <span>Δ REF</span>
+          </button>
+
+          <!-- Unit System Segmented Toggle (SI vs IMP) -->
+          <div class="ios-segmented ios-segmented-sm" id="unit-segmented" role="group" aria-label="Unit system">
+            <button type="button" class="seg-btn active" data-unit="metric">°C·m/s</button>
+            <button type="button" class="seg-btn" data-unit="imperial">°F·kn</button>
+          </div>
+
+          <!-- iOS Theme Toggle -->
+          <button class="ios-icon-btn" id="btn-theme-toggle" type="button" aria-label="Toggle appearance" title="Switch Dark / Light">
+            <svg id="icon-sun" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+            <svg id="icon-moon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main class="ios-content">
+      <!-- Station Slots Dock (Max 3 Cities) -->
+      <section class="section-block" aria-label="Selected Stations">
+        <div class="section-header-bar">
+          <div class="section-label">STATIONS <span class="slot-counter" id="slot-counter">3/3</span></div>
+          <div class="section-sub-actions">
+            <span class="hint-label" id="ref-station-hint">Tap station to set Δ REF · Tap chip to isolate chart</span>
+            <button type="button" class="text-action-btn" id="btn-add-station">+ Station</button>
+          </div>
+        </div>
+        <div class="city-slots-grid" id="city-slots-grid">
+          <!-- Populated dynamically with up to 3 station cards + optional add slot -->
+        </div>
+      </section>
+
+      <!-- Hero Range Area Chart Card -->
+      <section class="section-block" aria-label="Forecast Range Comparison Chart">
+        <div class="ios-card chart-card">
+          <!-- Chart Controls Header -->
+          <div class="chart-top-controls">
+            <div class="ios-segmented" id="chart-mode-segmented" role="tablist">
+              <button type="button" class="seg-btn active" data-mode="range">H/L Range</button>
+              <button type="button" class="seg-btn" data-mode="diurnal">72H Diurnal</button>
+              <button type="button" class="seg-btn" data-mode="psychro">Td &amp; VPD</button>
+              <button type="button" class="seg-btn" data-mode="wind">Wind &amp; hPa</button>
+            </div>
+
+            <div class="chart-right-controls">
+              <!-- Horizon selector for Daily Range modes -->
+              <div class="ios-segmented ios-segmented-sm" id="horizon-segmented">
+                <button type="button" class="seg-btn" data-days="7">7D</button>
+                <button type="button" class="seg-btn active" data-days="10">10D</button>
+                <button type="button" class="seg-btn" data-days="14">14D</button>
+              </div>
+              <!-- Time alignment selector for 72H Diurnal mode -->
+              <div class="ios-segmented ios-segmented-sm" id="diurnal-align-segmented" style="display:none">
+                <button type="button" class="seg-btn active" data-align="lst" title="Align by Local Station Time (00:00-23:00)">LST</button>
+                <button type="button" class="seg-btn" data-align="utc" title="Align by Simultaneous UTC Instant">UTC</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Interactive Scrubber Live Telemetry Header -->
+          <div class="scrubber-readout" id="scrubber-readout">
+            <!-- Dynamically updated at 60fps during touch/mouse scrub -->
+          </div>
+
+          <!-- City Band Solo / Visibility Filter Strip -->
+          <div class="chart-legend-bar" id="chart-legend-bar">
+            <!-- City filter pills + band legend explanation -->
+          </div>
+
+          <!-- High-DPI Canvas Container -->
+          <div class="canvas-stage" id="canvas-stage">
+            <canvas id="wx-chart-canvas"></canvas>
+          </div>
+
+          <!-- Sub-chart summary metrics bar (Envelope stats across horizon) -->
+          <div class="chart-footer-metrics" id="chart-footer-metrics">
+            <!-- Populated with global envelope min/max, mean diurnal spread, max delta -->
+          </div>
+        </div>
+      </section>
+
+      <!-- Multi-City Daily Range Bar Matrix (Apple Weather Style) -->
+      <section class="section-block" aria-label="Daily Thermal Envelope Matrix">
+        <div class="section-header-bar">
+          <div class="section-label">DAILY THERMAL ENVELOPE (T_MIN → T_MAX)</div>
+          <div class="section-sub-actions">
+            <span class="hint-label">Tap any day to lock telemetry inspector below</span>
+            <button type="button" class="text-action-btn" id="btn-reset-day" style="display:none">Reset to LIVE</button>
+          </div>
+        </div>
+        <div class="ios-card matrix-card">
+          <div class="daily-matrix-list" id="daily-matrix-list">
+            <!-- Rows for each day with 3 stacked/aligned range bars -->
+          </div>
+        </div>
+      </section>
+
+      <!-- Nerd Stats Telemetry Inspector (Zero Prose, Pure Atmospheric Data) -->
+      <section class="section-block" aria-label="Atmospheric Telemetry Tables">
+        <div class="section-header-bar">
+          <div class="section-label">
+            <span>TELEMETRY INSPECTOR</span>
+            <span class="inspector-badge" id="inspector-time-badge">LIVE NOW</span>
+          </div>
+          <div class="section-sub-actions">
+            <span class="hint-label" id="delta-mode-indicator">Δ relative to Slot 1</span>
+          </div>
+        </div>
+
+        <div class="telemetry-groups-grid" id="telemetry-groups-grid">
+          <!-- Populated with 6 grouped iOS inset tables of nerd stats -->
+        </div>
+      </section>
+    </main>
+
+    <!-- iOS Bottom Sheet / Modal for Adding / Swapping Cities & Presets -->
+    <div class="ios-modal-backdrop" id="station-modal" aria-hidden="true">
+      <div class="ios-sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+        <div class="sheet-grabber"></div>
+        <div class="sheet-header">
+          <div>
+            <h2 class="sheet-title" id="sheet-title">Select Stations (Max 3)</h2>
+            <p class="sheet-subtitle" id="sheet-subtitle">Compare up to 3 global synoptic stations simultaneously</p>
+          </div>
+          <button type="button" class="sheet-done-btn" id="btn-close-modal">Done</button>
+        </div>
+
+        <!-- Search Input Box -->
+        <div class="sheet-search-wrap">
+          <div class="ios-search-field">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input type="text" id="station-search-input" placeholder="City, ICAO (RJTT, KSFO), or region..." autocomplete="off" spellcheck="false" />
+            <button type="button" class="search-clear-btn" id="btn-clear-search" style="display:none">×</button>
+          </div>
+          <button type="button" class="gps-btn" id="btn-use-gps" title="Add Current GPS Coordinates">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg>
+            <span>GPS</span>
+          </button>
+        </div>
+
+        <!-- Active Slots Strip inside Sheet -->
+        <div class="sheet-active-bar" id="sheet-active-bar"></div>
+
+        <!-- Quick Comparison Triads (Presets) -->
+        <div class="sheet-presets-section" id="sheet-presets-section">
+          <div class="sheet-section-caption">CLIMATE CONTRAST TRIADS</div>
+          <div class="preset-chips-row" id="preset-chips-row"></div>
+        </div>
+
+        <!-- Search Results / Curated Station List -->
+        <div class="sheet-results-section">
+          <div class="sheet-section-caption" id="search-results-caption">GLOBAL SYNOPTIC STATIONS</div>
+          <div class="sheet-station-list" id="sheet-station-list"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

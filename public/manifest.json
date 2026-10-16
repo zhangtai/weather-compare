@@ -1,0 +1,9 @@
+{
+  "name": "WX·COMPARE Telemetry",
+  "short_name": "WX·COMPARE",
+  "description": "Multi-city meteorological forecast & range-area telemetry comparison",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#000000"
+}
